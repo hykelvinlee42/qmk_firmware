@@ -114,9 +114,18 @@ typedef struct usbConfigurationDescriptor {
     usbInterfaceDescriptor_t consoleInterface;
     usbHIDDescriptor_t       consoleHID;
     usbEndpointDescriptor_t  consoleINEndpoint;
+    usbEndpointDescriptor_t  consoleOUTEndpoint;
+#endif
+
+#if defined(XAP_ENABLE)
+    usbInterfaceDescriptor_t xapInterface;
+    usbHIDDescriptor_t       xapHID;
+    usbEndpointDescriptor_t  xapINEndpoint;
+    usbEndpointDescriptor_t  xapOUTEndpoint;
 #endif
 } __attribute__((packed)) usbConfigurationDescriptor_t;
 
 extern bool vusb_suspended;
 
 host_driver_t *vusb_driver(void);
+void           vusb_transfer_keyboard(void);

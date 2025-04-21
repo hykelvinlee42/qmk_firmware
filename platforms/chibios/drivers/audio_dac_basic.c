@@ -16,7 +16,8 @@
  */
 
 #include "audio.h"
-#include "gpio.h"
+#include "ch.h"
+#include "hal.h"
 
 // Need to disable GCC's "tautological-compare" warning for this file, as it causes issues when running `KEEP_INTERMEDIATES=yes`. Corresponding pop at the end of the file.
 #pragma GCC diagnostic push
@@ -190,7 +191,7 @@ static void gpt_audio_state_cb(GPTDriver *gptp) {
     }
 }
 
-void audio_driver_initialize_impl(void) {
+void audio_driver_initialize(void) {
     if ((AUDIO_PIN == A4) || (AUDIO_PIN_ALT == A4)) {
         palSetPadMode(GPIOA, 4, PAL_MODE_INPUT_ANALOG);
         dacStart(&DACD1, &dac_conf_ch1);
@@ -223,7 +224,7 @@ void audio_driver_initialize_impl(void) {
     gptStart(&AUDIO_STATE_TIMER, &gptStateUpdateCfg);
 }
 
-void audio_driver_stop_impl(void) {
+void audio_driver_stop(void) {
     if ((AUDIO_PIN == A4) || (AUDIO_PIN_ALT == A4)) {
         gptStopTimer(&GPTD6);
 
@@ -241,7 +242,7 @@ void audio_driver_stop_impl(void) {
     gptStopTimer(&AUDIO_STATE_TIMER);
 }
 
-void audio_driver_start_impl(void) {
+void audio_driver_start(void) {
     if ((AUDIO_PIN == A4) || (AUDIO_PIN_ALT == A4)) {
         dacStartConversion(&DACD1, &dac_conv_grp_ch1, (dacsample_t *)dac_buffer_1, AUDIO_DAC_BUFFER_SIZE);
     }

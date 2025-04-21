@@ -15,12 +15,9 @@
  */
 #include "quantum.h"
 
-bool shutdown_kb(bool jump_to_bootloader) {
-    if (!shutdown_user(jump_to_bootloader)) {
-        return false;
-    }
+__attribute__((weak))
+void shutdown_user(void) {
 #ifdef RGBLIGHT_ENABLE
     rgblight_setrgb(255, 0, 0);
 #endif
-    return true;
 }

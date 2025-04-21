@@ -1,10 +1,12 @@
 # Python requirements
-# platformdirs
+appdirs
 argcomplete
 colorama
 dotty-dict
+fnvhash
 hid
 hjson
+Jinja2
 jsonschema>=4
 milc>=1.4.2
 pygments

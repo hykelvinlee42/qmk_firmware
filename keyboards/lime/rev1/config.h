@@ -16,6 +16,20 @@
 
 #pragma once
 
-#define JOYSTICK_BUTTON_COUNT 1
+#define TAPPING_TERM 100
+
+/* joystick support */
+#ifdef JOYSTICK_ENABLE
+#   define JOYSTICK_AXIS_COUNT 2
+#   define JOYSTICK_BUTTON_COUNT 1
+#   define JOYSTICK_AXIS_RESOLUTION 8
+#endif
+
+#define TAP_CODE_DELAY 10
 
 #define SPLIT_USB_DETECT
+
+#ifdef WPM_ENABLE
+#    define SPLIT_WPM_ENABLE
+#endif
+

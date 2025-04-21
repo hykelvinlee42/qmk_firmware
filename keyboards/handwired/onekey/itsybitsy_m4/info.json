@@ -1,0 +1,12 @@
+{
+    "keyboard_name": "Onekey ItsyBitsy M4",
+    "processor": "SAMD51",
+    "bootloader": "sam-ba",
+    "matrix_pins": {
+        "cols": ["A22"],
+        "rows": ["A23"]
+    },
+    "ws2812": {
+        "pin": "A19"
+    }
+}

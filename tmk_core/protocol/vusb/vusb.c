@@ -30,7 +30,6 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "debug.h"
 #include "wait.h"
 #include "usb_descriptor_common.h"
-#include "usb_device_state.h"
 
 #ifdef RAW_ENABLE
 #    include "raw_hid.h"
@@ -38,6 +37,11 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 #ifdef JOYSTICK_ENABLE
 #    include "joystick.h"
+#endif
+
+#ifdef XAP_ENABLE
+#    include "xap.h"
+#    include <string.h>
 #endif
 
 #if defined(CONSOLE_ENABLE)
@@ -49,14 +53,16 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #    include "os_detection.h"
 #endif
 
+#define NEXT_INTERFACE __COUNTER__
+
 /*
  * Interface indexes
  */
 enum usb_interfaces {
 #ifndef KEYBOARD_SHARED_EP
-    KEYBOARD_INTERFACE,
+    KEYBOARD_INTERFACE = NEXT_INTERFACE,
 #else
-    SHARED_INTERFACE,
+    SHARED_INTERFACE = NEXT_INTERFACE,
 #    define KEYBOARD_INTERFACE SHARED_INTERFACE
 #endif
 
@@ -64,73 +70,71 @@ enum usb_interfaces {
 // interface number, to support Linux/OSX platforms and chrome.hid
 // If Raw HID is enabled, let it be always 1.
 #ifdef RAW_ENABLE
-    RAW_INTERFACE,
+    RAW_INTERFACE = NEXT_INTERFACE,
 #endif
 
 #if defined(SHARED_EP_ENABLE) && !defined(KEYBOARD_SHARED_EP)
-    SHARED_INTERFACE,
+    SHARED_INTERFACE = NEXT_INTERFACE,
 #endif
 
 #ifdef CONSOLE_ENABLE
-    CONSOLE_INTERFACE,
+    CONSOLE_INTERFACE = NEXT_INTERFACE,
 #endif
 
-    TOTAL_INTERFACES
+#ifdef XAP_ENABLE
+    XAP_INTERFACE = NEXT_INTERFACE,
+#endif
+
+    TOTAL_INTERFACES = NEXT_INTERFACE
 };
 
 #define MAX_INTERFACES 3
 
-_Static_assert(TOTAL_INTERFACES <= MAX_INTERFACES, "There are not enough available interfaces to support all functions. Please disable one or more of the following: Mouse Keys, Extra Keys, Raw HID, Console.");
+#if (NEXT_INTERFACE - 1) > MAX_INTERFACES
+#    error There are not enough available interfaces to support all functions. Please disable one or more of the following: Mouse Keys, Extra Keys, Raw HID, Console
+#endif
 
 #if (defined(MOUSE_ENABLE) || defined(EXTRAKEY_ENABLE)) && CONSOLE_ENABLE
 #    error Mouse/Extra Keys share an endpoint with Console. Please disable one of the two.
 #endif
 
+static uint8_t keyboard_led_state = 0;
+static uint8_t vusb_idle_rate     = 0;
+
+/* Keyboard report send buffer */
+#define KBUF_SIZE 16
+static report_keyboard_t kbuf[KBUF_SIZE];
+static uint8_t           kbuf_head = 0;
+static uint8_t           kbuf_tail = 0;
+
 static report_keyboard_t keyboard_report_sent;
 
-static void send_report_fragment(uint8_t endpoint, void *data, size_t size) {
-    for (uint8_t retries = 5; retries > 0; retries--) {
-        switch (endpoint) {
-            case 1:
-                if (usbInterruptIsReady()) {
-                    usbSetInterrupt(data, size);
-                    return;
+#define VUSB_TRANSFER_KEYBOARD_MAX_TRIES 10
+
+/* transfer keyboard report from buffer */
+void vusb_transfer_keyboard(void) {
+    for (int i = 0; i < VUSB_TRANSFER_KEYBOARD_MAX_TRIES; i++) {
+        if (usbInterruptIsReady()) {
+            if (kbuf_head != kbuf_tail) {
+#ifndef KEYBOARD_SHARED_EP
+                usbSetInterrupt((void *)&kbuf[kbuf_tail], sizeof(report_keyboard_t));
+#else
+                // Ugly hack! :(
+                usbSetInterrupt((void *)&kbuf[kbuf_tail], sizeof(report_keyboard_t) - 1);
+                while (!usbInterruptIsReady()) {
+                    usbPoll();
                 }
-                break;
-            case USB_CFG_EP3_NUMBER:
-                if (usbInterruptIsReady3()) {
-                    usbSetInterrupt3(data, size);
-                    return;
+                usbSetInterrupt((void *)(&(kbuf[kbuf_tail].keys[5])), 1);
+#endif
+                kbuf_tail = (kbuf_tail + 1) % KBUF_SIZE;
+                if (debug_keyboard) {
+                    dprintf("V-USB: kbuf[%d->%d](%02X)\n", kbuf_tail, kbuf_head, (kbuf_head < kbuf_tail) ? (KBUF_SIZE - kbuf_tail + kbuf_head) : (kbuf_head - kbuf_tail));
                 }
-                break;
-            case USB_CFG_EP4_NUMBER:
-                if (usbInterruptIsReady4()) {
-                    usbSetInterrupt4(data, size);
-                    return;
-                }
-                break;
-            default:
-                return;
+            }
+            break;
         }
-
         usbPoll();
-        wait_ms(5);
-    }
-}
-
-static void send_report(uint8_t endpoint, void *report, size_t size) {
-    uint8_t *temp = (uint8_t *)report;
-
-    // Send as many full packets as possible
-    for (uint8_t i = 0; i < size / 8; i++) {
-        send_report_fragment(endpoint, temp, 8);
-        temp += 8;
-    }
-
-    // Send any data left over
-    uint8_t remainder = size % 8;
-    if (remainder) {
-        send_report_fragment(endpoint, temp, remainder);
+        wait_ms(1);
     }
 }
 
@@ -149,7 +153,18 @@ void raw_hid_send(uint8_t *data, uint8_t length) {
         return;
     }
 
-    send_report(4, data, 32);
+    uint8_t *temp = data;
+    for (uint8_t i = 0; i < (RAW_BUFFER_SIZE / RAW_EPSIZE); i++) {
+        while (!usbInterruptIsReady4()) {
+            usbPoll();
+        }
+        usbSetInterrupt4(temp, 8);
+        temp += 8;
+    }
+    while (!usbInterruptIsReady4()) {
+        usbPoll();
+    }
+    usbSetInterrupt4(0, 0);
 }
 
 __attribute__((weak)) void raw_hid_receive(uint8_t *data, uint8_t length) {
@@ -159,15 +174,88 @@ __attribute__((weak)) void raw_hid_receive(uint8_t *data, uint8_t length) {
 }
 
 void raw_hid_task(void) {
-    usbPoll();
-
-    if (!usbConfiguration || !usbInterruptIsReady4()) {
-        return;
-    }
-
     if (raw_output_received_bytes == RAW_BUFFER_SIZE) {
         raw_hid_receive(raw_output_buffer, RAW_BUFFER_SIZE);
         raw_output_received_bytes = 0;
+    }
+}
+#endif
+
+/*------------------------------------------------------------------*
+ * XAP
+ *------------------------------------------------------------------*/
+#ifdef XAP_ENABLE
+#    define XAP_BUFFER_SIZE 64
+#    define XAP_EPSIZE 8
+
+static uint8_t xap_output_buffer[XAP_BUFFER_SIZE];
+static uint8_t xap_output_received_bytes = 0;
+
+extern void xap_receive(xap_token_t token, const uint8_t *data, size_t length);
+
+void xap_send_base(uint8_t *data, uint8_t length) {
+    if (length != XAP_BUFFER_SIZE) {
+        return;
+    }
+
+    uint8_t *temp = data;
+    for (uint8_t i = 0; i < (XAP_BUFFER_SIZE / XAP_EPSIZE); i++) {
+        while (!usbInterruptIsReady4()) {
+            usbPoll();
+        }
+        usbSetInterrupt4(temp, 8);
+        temp += 8;
+    }
+    while (!usbInterruptIsReady4()) {
+        usbPoll();
+    }
+    usbSetInterrupt4(0, 0);
+}
+
+void xap_send(xap_token_t token, xap_response_flags_t response_flags, const void *data, size_t length) {
+    uint8_t                rdata[XAP_BUFFER_SIZE] = {0};
+    xap_response_header_t *header                 = (xap_response_header_t *)&rdata[0];
+    header->token                                 = token;
+
+    if (length > (XAP_BUFFER_SIZE - sizeof(xap_response_header_t))) response_flags &= ~(XAP_RESPONSE_FLAG_SUCCESS);
+    header->flags = response_flags;
+
+    if (response_flags & (XAP_RESPONSE_FLAG_SUCCESS)) {
+        header->length = (uint8_t)length;
+        if (data != NULL) {
+            memcpy(&rdata[sizeof(xap_response_header_t)], data, length);
+        }
+    }
+    xap_send_base(rdata, sizeof(rdata));
+}
+
+void xap_broadcast(uint8_t type, const void *data, size_t length) {
+    uint8_t                 rdata[XAP_BUFFER_SIZE] = {0};
+    xap_broadcast_header_t *header                 = (xap_broadcast_header_t *)&rdata[0];
+    header->token                                  = XAP_BROADCAST_TOKEN;
+    header->type                                   = type;
+
+    if (length > (XAP_BUFFER_SIZE - sizeof(xap_broadcast_header_t))) return;
+
+    header->length = (uint8_t)length;
+    if (data != NULL) {
+        memcpy(&rdata[sizeof(xap_broadcast_header_t)], data, length);
+    }
+    xap_send_base(rdata, sizeof(rdata));
+}
+
+void xap_receive_base(const void *data) {
+    const uint8_t *       u8data = (const uint8_t *)data;
+    xap_request_header_t *header = (xap_request_header_t *)&u8data[0];
+    if (header->length <= (XAP_BUFFER_SIZE - sizeof(xap_request_header_t))) {
+        xap_receive(header->token, &u8data[sizeof(xap_request_header_t)], header->length);
+    }
+}
+
+void xap_task(void) {
+    if (xap_output_received_bytes == XAP_BUFFER_SIZE) {
+        xap_receive_base(xap_output_buffer);
+        xap_output_received_bytes = 0;
     }
 }
 #endif
@@ -184,10 +272,21 @@ int8_t sendchar(uint8_t c) {
     return 0;
 }
 
-void console_task(void) {
-    usbPoll();
+static inline bool usbSendData3(char *data, uint8_t len) {
+    uint8_t retries = 5;
+    while (!usbInterruptIsReady3()) {
+        if (!(retries--)) {
+            return false;
+        }
+        usbPoll();
+    }
 
-    if (!usbConfiguration || !usbInterruptIsReady3()) {
+    usbSetInterrupt3((unsigned char *)data, len);
+    return true;
+}
+
+void console_task(void) {
+    if (!usbConfiguration) {
         return;
     }
 
@@ -202,75 +301,97 @@ void console_task(void) {
         send_buf[send_buf_count++] = rbuf_dequeue();
     }
 
-    send_report(3, send_buf, CONSOLE_BUFFER_SIZE);
+    char *temp = send_buf;
+    for (uint8_t i = 0; i < 4; i++) {
+        if (!usbSendData3(temp, 8)) {
+            break;
+        }
+        temp += 8;
+    }
+
+    usbSendData3(0, 0);
+    usbPoll();
 }
 #endif
 
 /*------------------------------------------------------------------*
  * Host driver
  *------------------------------------------------------------------*/
-static void send_keyboard(report_keyboard_t *report);
-static void send_nkro(report_nkro_t *report);
-static void send_mouse(report_mouse_t *report);
-static void send_extra(report_extra_t *report);
+static uint8_t keyboard_leds(void);
+static void    send_keyboard(report_keyboard_t *report);
+static void    send_mouse(report_mouse_t *report);
+static void    send_extra(report_extra_t *report);
 
-static host_driver_t driver = {.keyboard_leds = usb_device_state_get_leds, .send_keyboard = send_keyboard, .send_nkro = send_nkro, .send_mouse = send_mouse, .send_extra = send_extra};
+static host_driver_t driver = {keyboard_leds, send_keyboard, send_mouse, send_extra};
 
 host_driver_t *vusb_driver(void) {
     return &driver;
 }
 
+static uint8_t keyboard_leds(void) {
+    return keyboard_led_state;
+}
+
 static void send_keyboard(report_keyboard_t *report) {
-    if (usb_device_state_get_protocol() == USB_PROTOCOL_BOOT) {
-        send_report(1, &report->mods, 8);
+    uint8_t next = (kbuf_head + 1) % KBUF_SIZE;
+    if (next != kbuf_tail) {
+        kbuf[kbuf_head] = *report;
+        kbuf_head       = next;
     } else {
-        send_report(1, report, sizeof(report_keyboard_t));
+        dprint("kbuf: full\n");
     }
 
+    // NOTE: send key strokes of Macro
+    usbPoll();
+    vusb_transfer_keyboard();
     keyboard_report_sent = *report;
 }
 
 #ifndef KEYBOARD_SHARED_EP
-#    define MOUSE_IN_EPNUM 3
-#    define SHARED_IN_EPNUM 3
+#    define usbInterruptIsReadyShared usbInterruptIsReady3
+#    define usbSetInterruptShared usbSetInterrupt3
 #else
-#    define MOUSE_IN_EPNUM 1
-#    define SHARED_IN_EPNUM 1
+#    define usbInterruptIsReadyShared usbInterruptIsReady
+#    define usbSetInterruptShared usbSetInterrupt
 #endif
-
-static void send_nkro(report_nkro_t *report) {
-#ifdef NKRO_ENABLE
-    send_report(3, report, sizeof(report_nkro_t));
-#endif
-}
 
 static void send_mouse(report_mouse_t *report) {
 #ifdef MOUSE_ENABLE
-    send_report(MOUSE_IN_EPNUM, report, sizeof(report_mouse_t));
+    if (usbInterruptIsReadyShared()) {
+        usbSetInterruptShared((void *)report, sizeof(report_mouse_t));
+    }
 #endif
 }
 
 static void send_extra(report_extra_t *report) {
 #ifdef EXTRAKEY_ENABLE
-    send_report(SHARED_IN_EPNUM, report, sizeof(report_extra_t));
+    if (usbInterruptIsReadyShared()) {
+        usbSetInterruptShared((void *)report, sizeof(report_extra_t));
+    }
 #endif
 }
 
 void send_joystick(report_joystick_t *report) {
 #ifdef JOYSTICK_ENABLE
-    send_report(SHARED_IN_EPNUM, report, sizeof(report_joystick_t));
+    if (usbInterruptIsReadyShared()) {
+        usbSetInterruptShared((void *)report, sizeof(report_joystick_t));
+    }
 #endif
 }
 
 void send_digitizer(report_digitizer_t *report) {
 #ifdef DIGITIZER_ENABLE
-    send_report(SHARED_IN_EPNUM, report, sizeof(report_digitizer_t));
+    if (usbInterruptIsReadyShared()) {
+        usbSetInterruptShared((void *)report, sizeof(report_digitizer_t));
+    }
 #endif
 }
 
 void send_programmable_button(report_programmable_button_t *report) {
 #ifdef PROGRAMMABLE_BUTTON_ENABLE
-    send_report(SHARED_IN_EPNUM, report, sizeof(report_programmable_button_t));
+    if (usbInterruptIsReadyShared()) {
+        usbSetInterruptShared((void *)report, sizeof(report_programmable_button_t));
+    }
 #endif
 }
 
@@ -286,48 +407,30 @@ usbMsgLen_t usbFunctionSetup(uchar data[8]) {
     usbRequest_t *rq = (void *)data;
 
     if ((rq->bmRequestType & USBRQ_TYPE_MASK) == USBRQ_TYPE_CLASS) { /* class request type */
-        switch (rq->bRequest) {
-            case USBRQ_HID_GET_REPORT:
-                dprint("GET_REPORT:");
-                if (rq->wIndex.word == KEYBOARD_INTERFACE) {
-                    usbMsgPtr = (usbMsgPtr_t)&keyboard_report_sent;
-                    return sizeof(keyboard_report_sent);
-                }
-                break;
-            case USBRQ_HID_GET_IDLE:
-                dprint("GET_IDLE:");
-                static uint8_t keyboard_idle;
-                keyboard_idle = usb_device_state_get_idle_rate();
-                usbMsgPtr     = (usbMsgPtr_t)&keyboard_idle;
-                return 1;
-            case USBRQ_HID_GET_PROTOCOL:
-                dprint("GET_PROTOCOL:");
-                static uint8_t keyboard_protocol;
-                keyboard_protocol = usb_device_state_get_protocol();
-                usbMsgPtr         = (usbMsgPtr_t)&keyboard_protocol;
-                return 1;
-            case USBRQ_HID_SET_REPORT:
-                dprint("SET_REPORT:");
-                // Report Type: 0x02(Out)/ReportID: 0x00(none) && Interface: 0(keyboard)
-                if (rq->wValue.word == 0x0200 && rq->wIndex.word == KEYBOARD_INTERFACE) {
-                    dprint("SET_LED:");
-                    last_req.kind = SET_LED;
-                    last_req.len  = rq->wLength.word;
-                }
-                return USB_NO_MSG; // to get data in usbFunctionWrite
-            case USBRQ_HID_SET_IDLE:
-                usb_device_state_set_idle_rate(rq->wValue.word >> 8);
-                dprintf("SET_IDLE: %02X", usb_device_state_get_idle_rate());
-                break;
-            case USBRQ_HID_SET_PROTOCOL:
-                if (rq->wIndex.word == KEYBOARD_INTERFACE) {
-                    usb_device_state_set_protocol(rq->wValue.word & 0xFF);
-                    dprintf("SET_PROTOCOL: %02X", usb_device_state_get_protocol());
-                }
-                break;
-            default:
-                dprint("UNKNOWN:");
-                break;
+        if (rq->bRequest == USBRQ_HID_GET_REPORT) {
+            dprint("GET_REPORT:");
+            if (rq->wIndex.word == KEYBOARD_INTERFACE) {
+                usbMsgPtr = (usbMsgPtr_t)&keyboard_report_sent;
+                return sizeof(keyboard_report_sent);
+            }
+        } else if (rq->bRequest == USBRQ_HID_GET_IDLE) {
+            dprint("GET_IDLE:");
+            usbMsgPtr = (usbMsgPtr_t)&vusb_idle_rate;
+            return 1;
+        } else if (rq->bRequest == USBRQ_HID_SET_IDLE) {
+            vusb_idle_rate = rq->wValue.bytes[1];
+            dprintf("SET_IDLE: %02X", vusb_idle_rate);
+        } else if (rq->bRequest == USBRQ_HID_SET_REPORT) {
+            dprint("SET_REPORT:");
+            // Report Type: 0x02(Out)/ReportID: 0x00(none) && Interface: 0(keyboard)
+            if (rq->wValue.word == 0x0200 && rq->wIndex.word == KEYBOARD_INTERFACE) {
+                dprint("SET_LED:");
+                last_req.kind = SET_LED;
+                last_req.len  = rq->wLength.word;
+            }
+            return USB_NO_MSG; // to get data in usbFunctionWrite
+        } else {
+            dprint("UNKNOWN:");
         }
     } else {
         dprint("VENDOR:");
@@ -343,9 +446,9 @@ uchar usbFunctionWrite(uchar *data, uchar len) {
     }
     switch (last_req.kind) {
         case SET_LED:
-            usb_device_state_set_leds(data[0]);
-            dprintf("SET_LED: %02X\n", usb_device_state_get_leds());
-            last_req.len = 0;
+            dprintf("SET_LED: %02X\n", data[0]);
+            keyboard_led_state = data[0];
+            last_req.len       = 0;
             return 1;
             break;
         case NONE:
@@ -373,6 +476,24 @@ void usbFunctionWriteOut(uchar *data, uchar len) {
             raw_output_buffer[raw_output_received_bytes + i] = data[i];
         }
         raw_output_received_bytes += len;
+    }
+#endif
+#ifdef XAP_ENABLE
+    // Data from host must be divided every 8bytes
+    if (len != 8) {
+        dprint("XAP: invalid length\n");
+        xap_output_received_bytes = 0;
+        return;
+    }
+
+    if (xap_output_received_bytes + len > XAP_BUFFER_SIZE) {
+        dprint("XAP: buffer full\n");
+        xap_output_received_bytes = 0;
+    } else {
+        for (uint8_t i = 0; i < 8; i++) {
+            xap_output_buffer[xap_output_received_bytes + i] = data[i];
+        }
+        xap_output_received_bytes += len;
     }
 #endif
 }
@@ -420,8 +541,6 @@ const PROGMEM uchar keyboard_hid_report[] = {
     0x05, 0x08, //   Usage Page (LED)
     0x19, 0x01, //   Usage Minimum (Num Lock)
     0x29, 0x05, //   Usage Maximum (Kana)
-    0x15, 0x00, //   Logical Minimum (0)
-    0x25, 0x01, //   Logical Maximum (1)
     0x95, 0x05, //   Report Count (5)
     0x75, 0x01, //   Report Size (1)
     0x91, 0x02, //   Output (Data, Variable, Absolute)
@@ -437,45 +556,6 @@ const PROGMEM uchar keyboard_hid_report[] = {
 #if defined(SHARED_EP_ENABLE) && !defined(SHARED_REPORT_STARTED)
 const PROGMEM uchar shared_hid_report[] = {
 #    define SHARED_REPORT_STARTED
-#endif
-
-#ifdef NKRO_ENABLE
-    // NKRO report descriptor
-    0x05, 0x01,           // Usage Page (Generic Desktop)
-    0x09, 0x06,           // Usage (Keyboard)
-    0xA1, 0x01,           // Collection (Application)
-    0x85, REPORT_ID_NKRO, //   Report ID
-    // Modifiers (8 bits)
-    0x05, 0x07, //   Usage Page (Keyboard/Keypad)
-    0x19, 0xE0, //   Usage Minimum (Keyboard Left Control)
-    0x29, 0xE7, //   Usage Maximum (Keyboard Right GUI)
-    0x15, 0x00, //   Logical Minimum (0)
-    0x25, 0x01, //   Logical Maximum (1)
-    0x95, 0x08, //   Report Count (8)
-    0x75, 0x01, //   Report Size (1)
-    0x81, 0x02, //   Input (Data, Variable, Absolute)
-    // Keycodes
-    0x05, 0x07,                     //   Usage Page (Keyboard/Keypad)
-    0x19, 0x00,                     //   Usage Minimum (0)
-    0x29, NKRO_REPORT_BITS * 8 - 1, //   Usage Maximum
-    0x15, 0x00,                     //   Logical Minimum (0)
-    0x25, 0x01,                     //   Logical Maximum (1)
-    0x95, NKRO_REPORT_BITS * 8,     //   Report Count
-    0x75, 0x01,                     //   Report Size (1)
-    0x81, 0x02,                     //   Input (Data, Variable, Absolute)
-
-    // Status LEDs (5 bits)
-    0x05, 0x08, //   Usage Page (LED)
-    0x19, 0x01, //   Usage Minimum (Num Lock)
-    0x29, 0x05, //   Usage Maximum (Kana)
-    0x95, 0x05, //   Report Count (5)
-    0x75, 0x01, //   Report Size (1)
-    0x91, 0x02, //   Output (Data, Variable, Absolute)
-    // LED padding (3 bits)
-    0x95, 0x01, //   Report Count (1)
-    0x75, 0x03, //   Report Size (3)
-    0x91, 0x03, //   Output (Constant)
-    0xC0,       // End Collection
 #endif
 
 #ifdef MOUSE_ENABLE
@@ -520,37 +600,23 @@ const PROGMEM uchar shared_hid_report[] = {
 #    endif
     0x81, 0x06, //     Input (Data, Variable, Relative)
 
-    // Vertical wheel (1 or 2 bytes)
+    // Vertical wheel (1 byte)
     0x09, 0x38, //     Usage (Wheel)
-#    ifndef WHEEL_EXTENDED_REPORT
     0x15, 0x81, //     Logical Minimum (-127)
     0x25, 0x7F, //     Logical Maximum (127)
     0x95, 0x01, //     Report Count (1)
     0x75, 0x08, //     Report Size (8)
-#    else
-    0x16, 0x01, 0x80, //     Logical Minimum (-32767)
-    0x26, 0xFF, 0x7F, //     Logical Maximum (32767)
-    0x95, 0x01,       //     Report Count (1)
-    0x75, 0x10,       //     Report Size (16)
-#    endif
     0x81, 0x06, //     Input (Data, Variable, Relative)
-    // Horizontal wheel (1 or 2 bytes)
+    // Horizontal wheel (1 byte)
     0x05, 0x0C,       //     Usage Page (Consumer)
     0x0A, 0x38, 0x02, //     Usage (AC Pan)
-#    ifndef WHEEL_EXTENDED_REPORT
-    0x15, 0x81, //     Logical Minimum (-127)
-    0x25, 0x7F, //     Logical Maximum (127)
-    0x95, 0x01, //     Report Count (1)
-    0x75, 0x08, //     Report Size (8)
-#    else
-    0x16, 0x01, 0x80, //     Logical Minimum (-32767)
-    0x26, 0xFF, 0x7F, //     Logical Maximum (32767)
+    0x15, 0x81,       //     Logical Minimum (-127)
+    0x25, 0x7F,       //     Logical Maximum (127)
     0x95, 0x01,       //     Report Count (1)
-    0x75, 0x10,       //     Report Size (16)
-#    endif
-    0x81, 0x06, //     Input (Data, Variable, Relative)
-    0xC0,       //   End Collection
-    0xC0,       // End Collection
+    0x75, 0x08,       //     Report Size (8)
+    0x81, 0x06,       //     Input (Data, Variable, Relative)
+    0xC0,             //   End Collection
+    0xC0,             // End Collection
 #endif
 
 #ifdef EXTRAKEY_ENABLE
@@ -621,23 +687,6 @@ const PROGMEM uchar shared_hid_report[] = {
     0x81, 0x02, //     Input (Data, Variable, Absolute)
 #    endif
 
-#    ifdef JOYSTICK_HAS_HAT
-    // Hat Switch (4 bits)
-    0x09, 0x39,       //     Usage (Hat Switch)
-    0x15, 0x00,       //     Logical Minimum (0)
-    0x25, 0x07,       //     Logical Maximum (7)
-    0x35, 0x00,       //     Physical Minimum (0)
-    0x46, 0x3B, 0x01, //     Physical Maximum (315)
-    0x65, 0x14,       //     Unit (Degree, English Rotation)
-    0x95, 0x01,       //     Report Count (1)
-    0x75, 0x04,       //     Report Size (4)
-    0x81, 0x42,       //     Input (Data, Variable, Absolute, Null State)
-    // Padding (4 bits)
-    0x95, 0x04, //     Report Count (4)
-    0x75, 0x01, //     Report Size (1)
-    0x81, 0x01, //     Input (Constant)
-#    endif
-
 #    if JOYSTICK_BUTTON_COUNT > 0
     0x05, 0x09,                  //     Usage Page (Button)
     0x19, 0x01,                  //     Usage Minimum (Button 1)
@@ -686,7 +735,7 @@ const PROGMEM uchar shared_hid_report[] = {
     0x26, 0xFF, 0x7F, //     Logical Maximum (32767)
     0x95, 0x02,       //     Report Count (2)
     0x75, 0x10,       //     Report Size (16)
-    0x65, 0x13,       //     Unit (Inch, English Linear)
+    0x65, 0x33,       //     Unit (Inch, English Linear)
     0x55, 0x0E,       //     Unit Exponent (-2)
     0x81, 0x02,       //     Input (Data, Variable, Absolute)
     0xC0,             //   End Collection
@@ -752,7 +801,37 @@ const PROGMEM uchar console_hid_report[] = {
     0x95, CONSOLE_BUFFER_SIZE, //   Report Count
     0x75, 0x08,                //   Report Size (8)
     0x81, 0x02,                //   Input (Data, Variable, Absolute)
+    // Data from host
+    0x09, 0x76,                //   Usage (Vendor Defined)
+    0x15, 0x00,                //   Logical Minimum (0x00)
+    0x26, 0xFF, 0x00,          //   Logical Maximum (0x00FF)
+    0x95, CONSOLE_BUFFER_SIZE, //   Report Count
+    0x75, 0x08,                //   Report Size (8)
+    0x91, 0x02,                //   Output (Data)
     0xC0                       // End Collection
+};
+#endif
+
+#ifdef XAP_ENABLE
+const PROGMEM uchar xap_report[] = {
+    0x06, 0x51, 0xFF, // Usage Page (Vendor Defined)
+    0x09, 0x58,       // Usage (Vendor Defined)
+    0xA1, 0x01,       // Collection (Application)
+    // Data to host
+    0x09, 0x62,            //   Usage (Vendor Defined)
+    0x15, 0x00,            //   Logical Minimum (0)
+    0x26, 0xFF, 0x00,      //   Logical Maximum (255)
+    0x95, XAP_BUFFER_SIZE, //   Report Count
+    0x75, 0x08,            //   Report Size (8)
+    0x81, 0x02,            //   Input (Data, Variable, Absolute)
+    // Data from host
+    0x09, 0x63,            //   Usage (Vendor Defined)
+    0x15, 0x00,            //   Logical Minimum (0)
+    0x26, 0xFF, 0x00,      //   Logical Maximum (255)
+    0x95, XAP_BUFFER_SIZE, //   Report Count
+    0x75, 0x08,            //   Report Size (8)
+    0x91, 0x02,            //   Output (Data, Variable, Absolute)
+    0xC0                   // End Collection
 };
 #endif
 
@@ -1019,6 +1098,66 @@ const PROGMEM usbConfigurationDescriptor_t usbConfigurationDescriptor = {
         .wMaxPacketSize      = CONSOLE_EPSIZE,
         .bInterval           = 0x01
     },
+    .consoleOUTEndpoint = {
+        .header = {
+            .bLength         = sizeof(usbEndpointDescriptor_t),
+            .bDescriptorType = USBDESCR_ENDPOINT
+        },
+        .bEndpointAddress    = (USBRQ_DIR_HOST_TO_DEVICE | USB_CFG_EP3_NUMBER),
+        .bmAttributes        = 0x03,
+        .wMaxPacketSize      = CONSOLE_EPSIZE,
+        .bInterval           = 0x01
+    },
+#    endif
+
+#    if defined(XAP_ENABLE)
+    /*
+     * XAP
+     */
+    .xapInterface = {
+        .header = {
+            .bLength         = sizeof(usbInterfaceDescriptor_t),
+            .bDescriptorType = USBDESCR_INTERFACE
+        },
+        .bInterfaceNumber    = XAP_INTERFACE,
+        .bAlternateSetting   = 0x00,
+        .bNumEndpoints       = 2,
+        .bInterfaceClass     = 0x03,
+        .bInterfaceSubClass  = 0x00,
+        .bInterfaceProtocol  = 0x00,
+        .iInterface          = 0x00
+    },
+    .xapHID = {
+        .header = {
+            .bLength         = sizeof(usbHIDDescriptor_t),
+            .bDescriptorType = USBDESCR_HID
+        },
+        .bcdHID              = 0x0101,
+        .bCountryCode        = 0x00,
+        .bNumDescriptors     = 1,
+        .bDescriptorType     = USBDESCR_HID_REPORT,
+        .wDescriptorLength   = sizeof(xap_report)
+    },
+    .xapINEndpoint = {
+        .header = {
+            .bLength         = sizeof(usbEndpointDescriptor_t),
+            .bDescriptorType = USBDESCR_ENDPOINT
+        },
+        .bEndpointAddress    = (USBRQ_DIR_DEVICE_TO_HOST | USB_CFG_EP4_NUMBER),
+        .bmAttributes        = 0x03,
+        .wMaxPacketSize      = XAP_EPSIZE,
+        .bInterval           = USB_POLLING_INTERVAL_MS
+    },
+    .xapOUTEndpoint = {
+        .header = {
+            .bLength         = sizeof(usbEndpointDescriptor_t),
+            .bDescriptorType = USBDESCR_ENDPOINT
+        },
+        .bEndpointAddress    = (USBRQ_DIR_HOST_TO_DEVICE | USB_CFG_EP4_NUMBER),
+        .bmAttributes        = 0x03,
+        .wMaxPacketSize      = XAP_EPSIZE,
+        .bInterval           = USB_POLLING_INTERVAL_MS
+    },
 #    endif
 };
 
@@ -1062,7 +1201,7 @@ USB_PUBLIC usbMsgLen_t usbFunctionDescriptor(struct usbRequest *rq) {
 #endif
             break;
         case USBDESCR_HID:
-            switch (rq->wIndex.word) {
+            switch (rq->wValue.bytes[0]) {
 #ifndef KEYBOARD_SHARED_EP
                 case KEYBOARD_INTERFACE:
                     usbMsgPtr = (usbMsgPtr_t)&usbConfigurationDescriptor.keyboardHID;
@@ -1087,6 +1226,13 @@ USB_PUBLIC usbMsgLen_t usbFunctionDescriptor(struct usbRequest *rq) {
 #if defined(CONSOLE_ENABLE)
                 case CONSOLE_INTERFACE:
                     usbMsgPtr = (usbMsgPtr_t)&usbConfigurationDescriptor.consoleHID;
+                    len       = sizeof(usbHIDDescriptor_t);
+                    break;
+#endif
+
+#if defined(XAP_ENABLE)
+                case XAP_INTERFACE:
+                    usbMsgPtr = (usbMsgPtr_t)&usbConfigurationDescriptor.xapHID;
                     len       = sizeof(usbHIDDescriptor_t);
                     break;
 #endif
@@ -1120,6 +1266,13 @@ USB_PUBLIC usbMsgLen_t usbFunctionDescriptor(struct usbRequest *rq) {
                 case CONSOLE_INTERFACE:
                     usbMsgPtr = (usbMsgPtr_t)console_hid_report;
                     len       = sizeof(console_hid_report);
+                    break;
+#endif
+
+#if defined(XAP_ENABLE)
+                case XAP_INTERFACE:
+                    usbMsgPtr = (usbMsgPtr_t)xap_report;
+                    len       = sizeof(xap_report);
                     break;
 #endif
             }

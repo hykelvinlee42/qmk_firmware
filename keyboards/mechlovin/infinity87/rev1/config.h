@@ -17,3 +17,4 @@
 #pragma once
 
 #define BACKLIGHT_PWM_DRIVER PWMD3
+#define BACKLIGHT_PWM_CHANNEL 3

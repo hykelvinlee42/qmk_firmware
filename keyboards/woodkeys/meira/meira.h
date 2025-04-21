@@ -16,5 +16,6 @@
 #pragma once
 
 #include "quantum.h"
+#include "issi.h"
 
 void reset_keyboard_kb(void);

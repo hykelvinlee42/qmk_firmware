@@ -3,7 +3,6 @@ name: 'Close stale issues and PRs'
 permissions:
   issues: write
   pull-requests: write
-  actions: write
 
 on:
   schedule:
@@ -14,7 +13,7 @@ jobs:
   stale:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/stale@main
+      - uses: actions/stale@v8
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -45,7 +44,7 @@ jobs:
           stale-pr-label: stale
           days-before-pr-stale: 45
           days-before-pr-close: 30
-          exempt-pr-labels: bug,awaiting review,breaking_change,in progress,on hold,needs-core-wireless,crippled-firmware
+          exempt-pr-labels: bug,awaiting review,breaking_change,in progress,on hold
 
           stale-pr-message: >
             Thank you for your contribution!

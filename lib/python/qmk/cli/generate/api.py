@@ -2,17 +2,18 @@
 """
 from pathlib import Path
 import shutil
+import hjson
 import json
 
 from milc import cli
 
-import qmk.path
 from qmk.datetime import current_datetime
 from qmk.info import info_json
 from qmk.json_schema import json_load
 from qmk.keymap import list_keymaps
-from qmk.keyboard import find_readme, list_keyboards, keyboard_alias_definitions
+from qmk.keyboard import find_readme, list_keyboards
 from qmk.keycodes import load_spec, list_versions, list_languages
+from qmk.xap.common import get_xap_definition_files, update_xap_definitions
 
 DATA_PATH = Path('data')
 TEMPLATE_PATH = DATA_PATH / 'templates/api/'
@@ -89,6 +90,22 @@ def _filtered_keyboard_list():
     return keyboard_list
 
 
+def _resolve_xap_specs(output_folder):
+    """To make it easier for consumers, publish pre-merged spec files
+    """
+    overall = None
+    for file in get_xap_definition_files():
+        overall = update_xap_definitions(overall, hjson.load(file.open(encoding='utf-8')))
+
+        # Inject dummy bits for unspecified response flags
+        for n in range(0, 8):
+            if str(n) not in overall['response_flags']['bits']:
+                overall['response_flags']['bits'][str(n)] = {'name': '', 'description': '', 'define': '-'}
+
+        output_file = output_folder / (file.stem + ".json")
+        output_file.write_text(json.dumps(overall, indent=4), encoding='utf-8')
+
+
 @cli.argument('-n', '--dry-run', arg_only=True, action='store_true', help="Don't write the data to disk.")
 @cli.argument('-f', '--filter', arg_only=True, action='append', default=[], help="Filter the list of keyboards based on partial name matches the supplied value. May be passed multiple times.")
 @cli.subcommand('Generate QMK API data', hidden=False if cli.config.user.developer else True)
@@ -127,16 +144,12 @@ def generate_api(cli):
 
         # Populate the list of JSON keymaps
         for keymap in list_keymaps(keyboard_name, c=False, fullpath=True):
-            keymap_rel = qmk.path.under_qmk_firmware(keymap)
-            if keymap_rel is None:
-                cli.log.debug('Skipping keymap %s (not in qmk_firmware)', keymap)
-                continue
             kb_json['keymaps'][keymap.name] = {
                 # TODO: deprecate 'url' as consumer needs to know its potentially hjson
-                'url': f'https://raw.githubusercontent.com/qmk/qmk_firmware/master/{keymap_rel}/keymap.json',
+                'url': f'https://raw.githubusercontent.com/qmk/qmk_firmware/master/{keymap}/keymap.json',
 
                 # Instead consumer should grab from API and not repo directly
-                'path': (keymap_rel / 'keymap.json').as_posix(),
+                'path': (keymap / 'keymap.json').as_posix(),
             }
 
         keyboard_dir.mkdir(parents=True, exist_ok=True)
@@ -171,7 +184,7 @@ def generate_api(cli):
 
     # Generate data for the global files
     keyboard_list = sorted(kb_all)
-    keyboard_aliases = keyboard_alias_definitions()
+    keyboard_aliases = json_load(Path('data/mappings/keyboard_aliases.hjson'))
     keyboard_metadata = {
         'last_updated': current_datetime(),
         'keyboards': keyboard_list,
@@ -181,6 +194,7 @@ def generate_api(cli):
 
     # Feature specific handling
     _resolve_keycode_specs(v1_dir)
+    _resolve_xap_specs(v1_dir / 'xap')
 
     # Write the global JSON files
     keyboard_all_json = json.dumps({'last_updated': current_datetime(), 'keyboards': kb_all}, separators=(',', ':'))

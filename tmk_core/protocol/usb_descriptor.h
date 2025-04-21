@@ -97,6 +97,7 @@ typedef struct {
     USB_Descriptor_Interface_t Console_Interface;
     USB_HID_Descriptor_HID_t   Console_HID;
     USB_Descriptor_Endpoint_t  Console_INEndpoint;
+    USB_Descriptor_Endpoint_t  Console_OUTEndpoint;
 #endif
 
 #ifdef MIDI_ENABLE
@@ -143,6 +144,14 @@ typedef struct {
     USB_Descriptor_Interface_t Digitizer_Interface;
     USB_HID_Descriptor_HID_t   Digitizer_HID;
     USB_Descriptor_Endpoint_t  Digitizer_INEndpoint;
+#endif
+
+#ifdef XAP_ENABLE
+    // XAP HID Interface
+    USB_Descriptor_Interface_t Xap_Interface;
+    USB_HID_Descriptor_HID_t   Xap_HID;
+    USB_Descriptor_Endpoint_t  Xap_INEndpoint;
+    USB_Descriptor_Endpoint_t  Xap_OUTEndpoint;
 #endif
 } USB_Descriptor_Configuration_t;
 
@@ -193,10 +202,12 @@ enum usb_interfaces {
 #if defined(DIGITIZER_ENABLE) && !defined(DIGITIZER_SHARED_EP)
     DIGITIZER_INTERFACE,
 #endif
+
+#ifdef XAP_ENABLE
+    XAP_INTERFACE,
+#endif
     TOTAL_INTERFACES
 };
-
-#define IS_VALID_INTERFACE(i) ((i) >= 0 && (i) < TOTAL_INTERFACES)
 
 #define NEXT_EPNUM __COUNTER__
 
@@ -233,6 +244,19 @@ enum usb_endpoints {
 
 #ifdef CONSOLE_ENABLE
     CONSOLE_IN_EPNUM = NEXT_EPNUM,
+
+#    ifdef PROTOCOL_CHIBIOS
+// ChibiOS has enough memory and descriptor to actually enable the endpoint
+// It could use the same endpoint numbers, as that's supported by ChibiOS
+// But the QMK code currently assumes that the endpoint numbers are different
+#        ifdef USB_ENDPOINTS_ARE_REORDERABLE
+#            define CONSOLE_OUT_EPNUM CONSOLE_IN_EPNUM
+#        else
+    CONSOLE_OUT_EPNUM = NEXT_EPNUM,
+#        endif
+#    else
+#        define CONSOLE_OUT_EPNUM CONSOLE_IN_EPNUM
+#    endif
 #endif
 
 #ifdef MIDI_ENABLE
@@ -269,6 +293,15 @@ enum usb_endpoints {
 #        define DIGITIZER_IN_EPNUM SHARED_IN_EPNUM
 #    endif
 #endif
+
+#ifdef XAP_ENABLE
+    XAP_IN_EPNUM = NEXT_EPNUM,
+#    if STM32_USB_USE_OTG1
+#        define XAP_OUT_EPNUM XAP_IN_EPNUM
+#    else
+    XAP_OUT_EPNUM         = NEXT_EPNUM,
+#    endif
+#endif
 };
 
 #ifdef PROTOCOL_LUFA
@@ -279,13 +312,15 @@ enum usb_endpoints {
 #    define MAX_ENDPOINTS USB_MAX_ENDPOINTS
 #endif
 
+// TODO - ARM_ATSAM
+
 #if (NEXT_EPNUM - 1) > MAX_ENDPOINTS
-#    error There are not enough available endpoints to support all functions. Please disable one or more of the following: Mouse Keys, Extra Keys, Console, NKRO, MIDI, Serial, Steno
+#    error There are not enough available endpoints to support all functions. Please disable one or more of the following: Mouse Keys, Extra Keys, Console, NKRO, MIDI, Serial, Steno, XAP
 #endif
 
 #define KEYBOARD_EPSIZE 8
 #define SHARED_EPSIZE 32
-#define MOUSE_EPSIZE 16
+#define MOUSE_EPSIZE 8
 #define RAW_EPSIZE 32
 #define CONSOLE_EPSIZE 32
 #define MIDI_STREAM_EPSIZE 64
@@ -293,5 +328,6 @@ enum usb_endpoints {
 #define CDC_EPSIZE 16
 #define JOYSTICK_EPSIZE 8
 #define DIGITIZER_EPSIZE 8
+#define XAP_EPSIZE 64
 
 uint16_t get_usb_descriptor(const uint16_t wValue, const uint16_t wIndex, const uint16_t wLength, const void** const DescriptorAddress);

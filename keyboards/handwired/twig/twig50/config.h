@@ -3,6 +3,8 @@
 
 #pragma once
 
+#define TAPPING_TERM 150
+
 #ifdef AUDIO_ENABLE
   #define AUDIO_PIN A5
   #define AUDIO_PIN_ALT A4

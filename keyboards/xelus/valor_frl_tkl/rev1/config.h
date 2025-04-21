@@ -16,6 +16,12 @@
 
 #pragma once
 
+/* Mechanical locking support. Use KC_LCAP, KC_LNUM or KC_LSCR instead in keymap */
+#define LOCKING_SUPPORT_ENABLE
+
+/* Locking resynchronize hack */
+#define LOCKING_RESYNC_ENABLE
+
 // I2C OLED defines
 #define I2C1_SCL_PIN B8
 #define I2C1_SDA_PIN B9
@@ -29,4 +35,10 @@
 #define I2C1_TIMINGR_SCLL   9U
 
 // I2C EEPROM
+// 24LC64
 #define EEPROM_I2C_24LC64
+
+// Dynamic EEPROM
+// Something sensible or else VIA may crash
+// Users may enable more if they wish
+#define DYNAMIC_KEYMAP_EEPROM_MAX_ADDR  4095

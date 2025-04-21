@@ -16,72 +16,24 @@
 
 #include "quantum.h"
 
-#ifdef BACKLIGHT_ENABLE
-#    include "process_backlight.h"
-#endif
-
 #ifdef BLUETOOTH_ENABLE
-#    include "process_connection.h"
+#    include "outputselect.h"
 #endif
 
-#ifdef GRAVE_ESC_ENABLE
-#    include "process_grave_esc.h"
-#endif
-
-#ifdef HAPTIC_ENABLE
-#    include "process_haptic.h"
-#endif
-
-#ifdef JOYSTICK_ENABLE
-#    include "process_joystick.h"
-#endif
-
-#ifdef LEADER_ENABLE
-#    include "process_leader.h"
-#endif
-
-#ifdef LED_MATRIX_ENABLE
-#    include "process_led_matrix.h"
-#endif
-
-#ifdef MAGIC_ENABLE
-#    include "process_magic.h"
+#ifdef BACKLIGHT_ENABLE
+#    include "backlight.h"
 #endif
 
 #ifdef MIDI_ENABLE
 #    include "process_midi.h"
 #endif
 
-#if !defined(NO_ACTION_LAYER)
-#    include "process_default_layer.h"
+#ifdef VELOCIKEY_ENABLE
+#    include "velocikey.h"
 #endif
 
-#ifdef PROGRAMMABLE_BUTTON_ENABLE
-#    include "process_programmable_button.h"
-#endif
-
-#if defined(RGB_MATRIX_ENABLE)
-#    include "process_rgb_matrix.h"
-#endif
-
-#if defined(RGBLIGHT_ENABLE) || defined(RGB_MATRIX_ENABLE)
-#    include "process_underglow.h"
-#endif
-
-#ifdef SECURE_ENABLE
-#    include "process_secure.h"
-#endif
-
-#ifdef TRI_LAYER_ENABLE
-#    include "process_tri_layer.h"
-#endif
-
-#ifdef UNICODE_COMMON_ENABLE
-#    include "process_unicode_common.h"
-#endif
-
-#ifdef LAYER_LOCK_ENABLE
-#    include "process_layer_lock.h"
+#ifdef HAPTIC_ENABLE
+#    include "haptic.h"
 #endif
 
 #ifdef AUDIO_ENABLE
@@ -162,10 +114,6 @@ __attribute__((weak)) void tap_code16(uint16_t code) {
     tap_code16_delay(code, code == KC_CAPS_LOCK ? TAP_HOLD_CAPS_DELAY : TAP_CODE_DELAY);
 }
 
-__attribute__((weak)) bool pre_process_record_modules(uint16_t keycode, keyrecord_t *record) {
-    return true;
-}
-
 __attribute__((weak)) bool pre_process_record_kb(uint16_t keycode, keyrecord_t *record) {
     return pre_process_record_user(keycode, record);
 }
@@ -178,10 +126,6 @@ __attribute__((weak)) bool process_action_kb(keyrecord_t *record) {
     return true;
 }
 
-__attribute__((weak)) bool process_record_modules(uint16_t keycode, keyrecord_t *record) {
-    return true;
-}
-
 __attribute__((weak)) bool process_record_kb(uint16_t keycode, keyrecord_t *record) {
     return process_record_user(keycode, record);
 }
@@ -190,23 +134,13 @@ __attribute__((weak)) bool process_record_user(uint16_t keycode, keyrecord_t *re
     return true;
 }
 
-__attribute__((weak)) void post_process_record_modules(uint16_t keycode, keyrecord_t *record) {}
-
 __attribute__((weak)) void post_process_record_kb(uint16_t keycode, keyrecord_t *record) {
     post_process_record_user(keycode, record);
 }
 
 __attribute__((weak)) void post_process_record_user(uint16_t keycode, keyrecord_t *record) {}
 
-__attribute__((weak)) bool shutdown_modules(bool jump_to_bootloader) {
-    return true;
-}
-
-__attribute__((weak)) void suspend_power_down_modules(void) {}
-
-__attribute__((weak)) void suspend_wakeup_init_modules(void) {}
-
-void shutdown_quantum(bool jump_to_bootloader) {
+void shutdown_quantum(void) {
     clear_keyboard();
 #if defined(MIDI_ENABLE) && defined(MIDI_BASIC)
     process_midi_all_notes_off();
@@ -217,14 +151,12 @@ void shutdown_quantum(bool jump_to_bootloader) {
 #    endif
     uint16_t timer_start = timer_read();
     PLAY_SONG(goodbye_song);
-    shutdown_modules(jump_to_bootloader);
-    shutdown_kb(jump_to_bootloader);
+    shutdown_user();
     while (timer_elapsed(timer_start) < 250)
         wait_ms(1);
     stop_all_notes();
 #else
-    shutdown_modules(jump_to_bootloader);
-    shutdown_kb(jump_to_bootloader);
+    shutdown_user();
     wait_ms(250);
 #endif
 #ifdef HAPTIC_ENABLE
@@ -233,12 +165,12 @@ void shutdown_quantum(bool jump_to_bootloader) {
 }
 
 void reset_keyboard(void) {
-    shutdown_quantum(true);
+    shutdown_quantum();
     bootloader_jump();
 }
 
 void soft_reset_keyboard(void) {
-    shutdown_quantum(false);
+    shutdown_quantum();
     mcu_reset();
 }
 
@@ -278,9 +210,10 @@ uint16_t get_event_keycode(keyevent_t event, bool update_layer_cache) {
 
 /* Get keycode, and then process pre tapping functionality */
 bool pre_process_record_quantum(keyrecord_t *record) {
-    return pre_process_record_modules(get_record_keycode(record, true), record) && pre_process_record_kb(get_record_keycode(record, true), record) &&
+    uint16_t keycode = get_record_keycode(record, true);
+    return pre_process_record_kb(keycode, record) &&
 #ifdef COMBO_ENABLE
-           process_combo(get_record_keycode(record, true), record) &&
+           process_combo(keycode, record) &&
 #endif
            true;
 }
@@ -288,7 +221,6 @@ bool pre_process_record_quantum(keyrecord_t *record) {
 /* Get keycode, and then call keyboard function */
 void post_process_record_quantum(keyrecord_t *record) {
     uint16_t keycode = get_record_keycode(record, false);
-    post_process_record_modules(keycode, record);
     post_process_record_kb(keycode, record);
 }
 
@@ -320,9 +252,9 @@ bool process_record_quantum(keyrecord_t *record) {
     }
 #endif
 
-#ifdef RGBLIGHT_ENABLE
-    if (record->event.pressed) {
-        preprocess_rgblight();
+#ifdef VELOCIKEY_ENABLE
+    if (velocikey_enabled() && record->event.pressed) {
+        velocikey_accelerate();
     }
 #endif
 
@@ -350,14 +282,13 @@ bool process_record_quantum(keyrecord_t *record) {
 #ifdef HAPTIC_ENABLE
             process_haptic(keycode, record) &&
 #endif
-#if defined(POINTING_DEVICE_ENABLE) && defined(POINTING_DEVICE_AUTO_MOUSE_ENABLE)
-            process_auto_mouse(keycode, record) &&
-#endif
-            process_record_modules(keycode, record) && // modules must run before kb
-            process_record_kb(keycode, record) &&
 #if defined(VIA_ENABLE)
             process_record_via(keycode, record) &&
 #endif
+#if defined(POINTING_DEVICE_ENABLE) && defined(POINTING_DEVICE_AUTO_MOUSE_ENABLE)
+            process_auto_mouse(keycode, record) &&
+#endif
+            process_record_kb(keycode, record) &&
 #if defined(SECURE_ENABLE)
             process_secure(keycode, record) &&
 #endif
@@ -370,11 +301,8 @@ bool process_record_quantum(keyrecord_t *record) {
 #ifdef AUDIO_ENABLE
             process_audio(keycode, record) &&
 #endif
-#if defined(BACKLIGHT_ENABLE)
+#if defined(BACKLIGHT_ENABLE) || defined(LED_MATRIX_ENABLE)
             process_backlight(keycode, record) &&
-#endif
-#if defined(LED_MATRIX_ENABLE)
-            process_led_matrix(keycode, record) &&
 #endif
 #ifdef STENO_ENABLE
             process_steno(keycode, record) &&
@@ -382,14 +310,14 @@ bool process_record_quantum(keyrecord_t *record) {
 #if (defined(AUDIO_ENABLE) || (defined(MIDI_ENABLE) && defined(MIDI_BASIC))) && !defined(NO_MUSIC_MODE)
             process_music(keycode, record) &&
 #endif
-#ifdef CAPS_WORD_ENABLE
-            process_caps_word(keycode, record) &&
-#endif
 #ifdef KEY_OVERRIDE_ENABLE
             process_key_override(keycode, record) &&
 #endif
 #ifdef TAP_DANCE_ENABLE
             process_tap_dance(keycode, record) &&
+#endif
+#ifdef CAPS_WORD_ENABLE
+            process_caps_word(keycode, record) &&
 #endif
 #if defined(UNICODE_COMMON_ENABLE)
             process_unicode_common(keycode, record) &&
@@ -406,17 +334,14 @@ bool process_record_quantum(keyrecord_t *record) {
 #ifdef SPACE_CADET_ENABLE
             process_space_cadet(keycode, record) &&
 #endif
-#ifdef MAGIC_ENABLE
+#ifdef MAGIC_KEYCODE_ENABLE
             process_magic(keycode, record) &&
 #endif
 #ifdef GRAVE_ESC_ENABLE
             process_grave_esc(keycode, record) &&
 #endif
 #if defined(RGBLIGHT_ENABLE) || defined(RGB_MATRIX_ENABLE)
-            process_underglow(keycode, record) &&
-#endif
-#if defined(RGB_MATRIX_ENABLE)
-            process_rgb_matrix(keycode, record) &&
+            process_rgb(keycode, record) &&
 #endif
 #ifdef JOYSTICK_ENABLE
             process_joystick(keycode, record) &&
@@ -429,15 +354,6 @@ bool process_record_quantum(keyrecord_t *record) {
 #endif
 #ifdef TRI_LAYER_ENABLE
             process_tri_layer(keycode, record) &&
-#endif
-#if !defined(NO_ACTION_LAYER)
-            process_default_layer(keycode, record) &&
-#endif
-#ifdef LAYER_LOCK_ENABLE
-            process_layer_lock(keycode, record) &&
-#endif
-#ifdef BLUETOOTH_ENABLE
-            process_connection(keycode, record) &&
 #endif
             true)) {
         return false;
@@ -474,6 +390,17 @@ bool process_record_quantum(keyrecord_t *record) {
 #ifdef VELOCIKEY_ENABLE
             case QK_VELOCIKEY_TOGGLE:
                 velocikey_toggle();
+                return false;
+#endif
+#ifdef BLUETOOTH_ENABLE
+            case QK_OUTPUT_AUTO:
+                set_output(OUTPUT_AUTO);
+                return false;
+            case QK_OUTPUT_USB:
+                set_output(OUTPUT_USB);
+                return false;
+            case QK_OUTPUT_BLUETOOTH:
+                set_output(OUTPUT_BLUETOOTH);
                 return false;
 #endif
 #ifndef NO_ACTION_ONESHOT
@@ -520,40 +447,28 @@ bool process_record_quantum(keyrecord_t *record) {
     return process_action_kb(record);
 }
 
-void set_single_default_layer(uint8_t default_layer) {
+void set_single_persistent_default_layer(uint8_t default_layer) {
 #if defined(AUDIO_ENABLE) && defined(DEFAULT_LAYER_SONGS)
     PLAY_SONG(default_layer_songs[default_layer]);
 #endif
-    default_layer_set((layer_state_t)1 << default_layer);
-}
-
-void set_single_persistent_default_layer(uint8_t default_layer) {
     eeconfig_update_default_layer((layer_state_t)1 << default_layer);
-    set_single_default_layer(default_layer);
+    default_layer_set((layer_state_t)1 << default_layer);
 }
 
 //------------------------------------------------------------------------------
 // Override these functions in your keymap file to play different tunes on
 // different events such as startup and bootloader jump
 
-__attribute__((weak)) bool shutdown_user(bool jump_to_bootloader) {
-    return true;
-}
+__attribute__((weak)) void startup_user(void) {}
 
-__attribute__((weak)) bool shutdown_kb(bool jump_to_bootloader) {
-    if (!shutdown_user(jump_to_bootloader)) {
-        return false;
-    }
-    return true;
-}
+__attribute__((weak)) void shutdown_user(void) {}
 
 void suspend_power_down_quantum(void) {
-    suspend_power_down_modules();
     suspend_power_down_kb();
 #ifndef NO_SUSPEND_POWER_DOWN
 // Turn off backlight
 #    ifdef BACKLIGHT_ENABLE
-    backlight_level_noeeprom(0);
+    backlight_set(0);
 #    endif
 
 #    ifdef LED_MATRIX_ENABLE
@@ -616,7 +531,6 @@ __attribute__((weak)) void suspend_wakeup_init_quantum(void) {
 #if defined(RGB_MATRIX_ENABLE)
     rgb_matrix_set_suspend_state(false);
 #endif
-    suspend_wakeup_init_modules();
     suspend_wakeup_init_kb();
 }
 
@@ -686,5 +600,9 @@ void secure_hook_quantum(secure_status_t secure_status) {
         clear_keyboard();
         layer_clear();
     }
+
+#    if defined(XAP_ENABLE)
+    xap_broadcast_secure_status(secure_status);
+#    endif
 }
 #endif

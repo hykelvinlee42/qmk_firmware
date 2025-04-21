@@ -22,15 +22,6 @@ void     eeprom_update_dword(uint32_t *__p, uint32_t __value);
 void     eeprom_update_block(const void *__src, void *__dst, size_t __n);
 #endif
 
-// While newer avr-libc versions may have an implementation
-//   use preprocessor as to not cause conflicts
-#undef eeprom_write_qword
-#define eeprom_write_qword(__p, __value)                  \
-    do {                                                  \
-        uint64_t tmp = __value;                           \
-        eeprom_update_block(&tmp, __p, sizeof(uint64_t)); \
-    } while (0)
-
 #if defined(EEPROM_CUSTOM)
 #    ifndef EEPROM_SIZE
 #        error EEPROM_SIZE has not been defined for custom driver.
@@ -58,7 +49,8 @@ void     eeprom_update_block(const void *__src, void *__dst, size_t __n);
 #    define TOTAL_EEPROM_BYTE_COUNT (FEE_DENSITY_BYTES)
 #elif defined(EEPROM_SAMD)
 #    include "eeprom_samd.h"
-#    define TOTAL_EEPROM_BYTE_COUNT (EEPROM_SIZE)
+#elif defined(EEPROM_SAMD51)
+#    define TOTAL_EEPROM_BYTE_COUNT 4096
 #elif defined(__AVR_ATmega16U2__) || defined(__AVR_ATmega16U4__) || defined(__AVR_AT90USB162__) || defined(__AVR_ATtiny85__)
 #    define TOTAL_EEPROM_BYTE_COUNT 512
 #elif defined(__AVR_ATmega32U2__) || defined(__AVR_ATmega32U4__) || defined(__AVR_ATmega328P__) || defined(__AVR_ATmega32A__)

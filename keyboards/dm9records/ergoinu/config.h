@@ -19,8 +19,15 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 #pragma once
 
+/* Select hand configuration */
+#define MASTER_LEFT
+// #define MASTER_RIGHT
+// #define EE_HANDS
+
+#define RGBLED_NUM 7
+
 #ifndef IOS_DEVICE_ENABLE
-  #if RGBLIGHT_LED_COUNT <= 7
+  #if RGBLED_NUM <= 7
     #define RGBLIGHT_LIMIT_VAL 255
     #define RGBLIGHT_VAL_STEP 17
   #endif
@@ -28,6 +35,9 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
   #define RGBLIGHT_LIMIT_VAL 90
   #define RGBLIGHT_VAL_STEP 4
 #endif
+
+#define RGBLIGHT_HUE_STEP 10
+#define RGBLIGHT_SAT_STEP 17
 
 #if defined(RGBLIGHT_ENABLE) && !defined(IOS_DEVICE_ENABLE)
   #define USB_MAX_POWER_CONSUMPTION 500
